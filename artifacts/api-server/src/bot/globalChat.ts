@@ -6,6 +6,7 @@ import {
   SlashCommandBuilder,
   ChannelType,
   Events,
+  PermissionFlagsBits,
   type Message,
   type TextChannel,
   type MessageCreateOptions,
@@ -19,8 +20,10 @@ import {
   globalMessagesTable,
   globalMessageMappingsTable,
   spamTrackerTable,
+  globalBansTable,
+  userStatsTable,
 } from "@workspace/db";
-import { eq, and } from "drizzle-orm";
+import { eq, desc, sql } from "drizzle-orm";
 import { logger } from "../lib/logger.js";
 
 const SPAM_WINDOW_MS = 10_000;
@@ -35,6 +38,14 @@ const client = new Client({
   ],
 });
 
+async function isPermanentlyBanned(userId: string): Promise<boolean> {
+  const [ban] = await db
+    .select()
+    .from(globalBansTable)
+    .where(eq(globalBansTable.userId, userId));
+  return !!ban;
+}
+
 async function isSpamming(userId: string): Promise<boolean> {
   const now = new Date();
 
@@ -48,8 +59,7 @@ async function isSpamming(userId: string): Promise<boolean> {
   }
 
   if (tracker) {
-    const windowStart = tracker.windowStart;
-    const elapsed = now.getTime() - windowStart.getTime();
+    const elapsed = now.getTime() - tracker.windowStart.getTime();
 
     if (elapsed > SPAM_WINDOW_MS) {
       await db
@@ -83,6 +93,20 @@ async function isSpamming(userId: string): Promise<boolean> {
     });
     return false;
   }
+}
+
+async function incrementUserStats(userId: string, userName: string): Promise<void> {
+  await db
+    .insert(userStatsTable)
+    .values({ userId, userName, totalMessages: 1, lastSeen: new Date() })
+    .onConflictDoUpdate({
+      target: userStatsTable.userId,
+      set: {
+        userName,
+        totalMessages: sql`${userStatsTable.totalMessages} + 1`,
+        lastSeen: new Date(),
+      },
+    });
 }
 
 async function broadcastMessage(
@@ -200,6 +224,29 @@ async function registerCommands(token: string, clientId: string): Promise<void> 
       .setName("グローバル終了")
       .setDescription("このチャンネルのグローバルチャット登録を解除します")
       .toJSON(),
+    new SlashCommandBuilder()
+      .setName("ランキング")
+      .setDescription("グローバルチャットの発言数ランキングを表示します")
+      .toJSON(),
+    new SlashCommandBuilder()
+      .setName("出禁")
+      .setDescription("指定したユーザーをグローバルチャットから出禁にします（管理者のみ）")
+      .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+      .addUserOption((opt) =>
+        opt.setName("ユーザー").setDescription("出禁にするユーザー").setRequired(true)
+      )
+      .addStringOption((opt) =>
+        opt.setName("理由").setDescription("出禁の理由").setRequired(false)
+      )
+      .toJSON(),
+    new SlashCommandBuilder()
+      .setName("出禁解除")
+      .setDescription("指定したユーザーの出禁を解除します（管理者のみ）")
+      .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+      .addUserOption((opt) =>
+        opt.setName("ユーザー").setDescription("出禁解除するユーザー").setRequired(true)
+      )
+      .toJSON(),
   ];
 
   const rest = new REST({ version: "10" }).setToken(token);
@@ -224,6 +271,9 @@ export async function startBot(): Promise<void> {
 
     const commandName = interaction.commandName;
 
+    // ========================
+    // /グローバル開始
+    // ========================
     if (commandName === "グローバル開始") {
       await interaction.deferReply({ ephemeral: true });
 
@@ -266,6 +316,9 @@ export async function startBot(): Promise<void> {
       }
     }
 
+    // ========================
+    // /グローバル終了
+    // ========================
     if (commandName === "グローバル終了") {
       await interaction.deferReply({ ephemeral: true });
 
@@ -293,8 +346,110 @@ export async function startBot(): Promise<void> {
       await interaction.editReply("✅ このチャンネルのグローバルチャット登録を解除しました。");
       logger.info({ channelId: interaction.channelId }, "Global channel unregistered");
     }
+
+    // ========================
+    // /ランキング
+    // ========================
+    if (commandName === "ランキング") {
+      await interaction.deferReply();
+
+      const top = await db
+        .select()
+        .from(userStatsTable)
+        .orderBy(desc(userStatsTable.totalMessages))
+        .limit(10);
+
+      if (top.length === 0) {
+        await interaction.editReply("まだグローバルチャットでの発言がありません。");
+        return;
+      }
+
+      const medals = ["🥇", "🥈", "🥉"];
+      const lines = top.map((entry, i) => {
+        const rank = medals[i] ?? `**${i + 1}.**`;
+        return `${rank} **${entry.userName}** — ${entry.totalMessages.toLocaleString()} 件`;
+      });
+
+      await interaction.editReply({
+        embeds: [
+          {
+            title: "🏆 グローバルチャット 発言数ランキング",
+            description: lines.join("\n"),
+            color: 0xf5a623,
+            footer: { text: `全 ${top.length} 名を表示` },
+          },
+        ],
+      });
+    }
+
+    // ========================
+    // /出禁
+    // ========================
+    if (commandName === "出禁") {
+      await interaction.deferReply({ ephemeral: true });
+
+      const targetUser = interaction.options.getUser("ユーザー", true);
+      const reason = interaction.options.getString("理由") ?? "理由なし";
+
+      if (targetUser.bot) {
+        await interaction.editReply("Botを出禁にすることはできません。");
+        return;
+      }
+
+      const [existing] = await db
+        .select()
+        .from(globalBansTable)
+        .where(eq(globalBansTable.userId, targetUser.id));
+
+      if (existing) {
+        await interaction.editReply(`**${targetUser.displayName}** はすでに出禁になっています。`);
+        return;
+      }
+
+      await db.insert(globalBansTable).values({
+        userId: targetUser.id,
+        bannedByUserId: interaction.user.id,
+        reason,
+      });
+
+      await interaction.editReply(
+        `🚫 **${targetUser.displayName}** をグローバルチャットから出禁にしました。\n理由: ${reason}`
+      );
+      logger.info({ targetUserId: targetUser.id, bannedBy: interaction.user.id, reason }, "User banned from global chat");
+    }
+
+    // ========================
+    // /出禁解除
+    // ========================
+    if (commandName === "出禁解除") {
+      await interaction.deferReply({ ephemeral: true });
+
+      const targetUser = interaction.options.getUser("ユーザー", true);
+
+      const [existing] = await db
+        .select()
+        .from(globalBansTable)
+        .where(eq(globalBansTable.userId, targetUser.id));
+
+      if (!existing) {
+        await interaction.editReply(`**${targetUser.displayName}** は出禁になっていません。`);
+        return;
+      }
+
+      await db
+        .delete(globalBansTable)
+        .where(eq(globalBansTable.userId, targetUser.id));
+
+      await interaction.editReply(
+        `✅ **${targetUser.displayName}** の出禁を解除しました。`
+      );
+      logger.info({ targetUserId: targetUser.id, unbannedBy: interaction.user.id }, "User unbanned from global chat");
+    }
   });
 
+  // ========================
+  // メッセージ受信
+  // ========================
   client.on(Events.MessageCreate, async (message) => {
     if (message.author.bot) return;
     if (!message.guild) return;
@@ -306,6 +461,18 @@ export async function startBot(): Promise<void> {
 
     if (!globalChannel) return;
 
+    // 出禁チェック
+    const banned = await isPermanentlyBanned(message.author.id);
+    if (banned) {
+      try {
+        await message.delete().catch(() => {});
+        const dm = await message.author.createDM().catch(() => null);
+        if (dm) await dm.send("🚫 あなたはグローバルチャットから出禁になっています。").catch(() => {});
+      } catch (_) {}
+      return;
+    }
+
+    // スパムチェック
     const spamming = await isSpamming(message.author.id);
     if (spamming) {
       try {
@@ -314,6 +481,9 @@ export async function startBot(): Promise<void> {
       } catch (_) {}
       return;
     }
+
+    // 統計更新
+    await incrementUserStats(message.author.id, message.author.displayName);
 
     await db.insert(globalMessagesTable).values({
       originMessageId: message.id,
@@ -327,6 +497,9 @@ export async function startBot(): Promise<void> {
     await broadcastMessage(message, message.channelId);
   });
 
+  // ========================
+  // メッセージ編集
+  // ========================
   client.on(Events.MessageUpdate, async (oldMessage, newMessage) => {
     if (!newMessage.author || newMessage.author.bot) return;
     if (!newMessage.guild) return;
@@ -347,6 +520,9 @@ export async function startBot(): Promise<void> {
       .where(eq(globalMessagesTable.originMessageId, newMessage.id));
   });
 
+  // ========================
+  // メッセージ削除
+  // ========================
   client.on(Events.MessageDelete, async (message) => {
     if (!message.guild) return;
 
