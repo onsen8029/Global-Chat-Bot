@@ -1,5 +1,27 @@
 # Workspace
 
+## Discord グローバルチャットBot
+
+Discord上で複数サーバーをまたいだグローバルチャットを実現するBotです。
+
+### 機能
+- `/グローバル開始` コマンドでチャンネルをグローバルチャットに登録
+- `/グローバル終了` コマンドで登録解除
+- Webhook経由でメッセージ・画像・動画を全登録チャンネルに転送
+- メッセージ編集・削除が全サーバーに反映
+- スパム対策（10秒間に5件以上で60秒間バン）
+
+### 必要な権限
+- `Send Messages`
+- `Manage Webhooks`
+- `Read Message History`
+- `Message Content Intent`（Developer Portal で有効化必須）
+
+### 環境変数
+- `DISCORD_BOT_TOKEN` — Discord Bot トークン
+
+
+
 ## Overview
 
 pnpm workspace monorepo using TypeScript. Each package manages its own dependencies.
