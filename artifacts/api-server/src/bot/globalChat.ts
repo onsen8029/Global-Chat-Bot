@@ -487,16 +487,9 @@ export async function startBot(): Promise<void> {
 
     if (!globalChannel) return;
 
-    // 出禁チェック
+    // 出禁チェック（メッセージは消さず、他サーバーへの転送のみスキップ）
     const banned = await isPermanentlyBanned(message.author.id);
-    if (banned) {
-      try {
-        await message.delete().catch(() => {});
-        const dm = await message.author.createDM().catch(() => null);
-        if (dm) await dm.send("🚫 あなたはグローバルチャットから出禁になっています。").catch(() => {});
-      } catch (_) {}
-      return;
-    }
+    if (banned) return;
 
     // スパムチェック
     const spamming = await isSpamming(message.author.id);
