@@ -109,6 +109,28 @@ async function incrementUserStats(userId: string, userName: string): Promise<voi
     });
 }
 
+async function buildReplyHeader(originMessage: Message): Promise<string> {
+  if (!originMessage.reference?.messageId) return "";
+
+  try {
+    const referenced = await originMessage.fetchReference();
+    const refAuthor = referenced.author;
+    const refContent = referenced.content
+      ? referenced.content.slice(0, 80) + (referenced.content.length > 80 ? "…" : "")
+      : referenced.attachments.size > 0
+        ? "📎 添付ファイル"
+        : "（メッセージなし）";
+
+    const refName = refAuthor.bot
+      ? refAuthor.displayName
+      : `${refAuthor.displayName}`;
+
+    return `> ↩️ **${refName}**: ${refContent}\n`;
+  } catch {
+    return "> ↩️ （返信元メッセージを取得できませんでした）\n";
+  }
+}
+
 async function broadcastMessage(
   originMessage: Message,
   excludeChannelId: string
@@ -125,6 +147,7 @@ async function broadcastMessage(
 
   const username = `${originMessage.author.displayName} (${originMessage.guild?.name ?? "Unknown"})`;
   const avatarURL = originMessage.author.displayAvatarURL();
+  const replyHeader = await buildReplyHeader(originMessage);
 
   for (const target of targets) {
     try {
@@ -139,17 +162,19 @@ async function broadcastMessage(
         allowedMentions: { parse: [] },
       };
 
+      let content = replyHeader;
       if (originMessage.content) {
-        payload.content = originMessage.content;
+        content += originMessage.content;
       }
-
       if (attachmentUrls.length > 0) {
-        payload.content = (payload.content ? payload.content + "\n" : "") + attachmentUrls.join("\n");
+        content += (content ? "\n" : "") + attachmentUrls.join("\n");
       }
 
-      if (!payload.content && embeds.length === 0) {
+      if (!content && embeds.length === 0) {
         continue;
       }
+
+      if (content) payload.content = content;
 
       const sent = await webhookClient.send(payload as Parameters<typeof webhookClient.send>[0]);
 
