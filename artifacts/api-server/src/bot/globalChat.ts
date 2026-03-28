@@ -146,6 +146,11 @@ async function broadcastMessage(
     attachmentUrls.push(attachment.url);
   }
 
+  const stickerLines: string[] = [];
+  for (const sticker of originMessage.stickers.values()) {
+    stickerLines.push(`🏷️ **${sticker.name}**\n${sticker.url}`);
+  }
+
   const username = `${originMessage.author.displayName} (${originMessage.guild?.name ?? "Unknown"})`;
   const avatarURL = originMessage.author.displayAvatarURL();
   const replyHeader = await buildReplyHeader(originMessage);
@@ -169,6 +174,9 @@ async function broadcastMessage(
       }
       if (attachmentUrls.length > 0) {
         content += (content ? "\n" : "") + attachmentUrls.join("\n");
+      }
+      if (stickerLines.length > 0) {
+        content += (content ? "\n" : "") + stickerLines.join("\n");
       }
 
       if (!content && embeds.length === 0) {
