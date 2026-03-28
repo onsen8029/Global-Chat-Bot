@@ -485,7 +485,7 @@ export async function startBot(): Promise<void> {
   // メッセージ受信
   // ========================
   client.on(Events.MessageCreate, async (message) => {
-    if (message.author.bot) return;
+    if (!message.author) return;
     if (!message.guild) return;
 
     const [globalChannel] = await db
@@ -495,22 +495,28 @@ export async function startBot(): Promise<void> {
 
     if (!globalChannel) return;
 
-    // 出禁チェック（メッセージは消さず、他サーバーへの転送のみスキップ）
-    const banned = await isPermanentlyBanned(message.author.id);
-    if (banned) return;
+    // 自分のWebhookメッセージは無限ループ防止のためスキップ
+    if (message.webhookId === globalChannel.webhookId) return;
 
-    // スパムチェック
-    const spamming = await isSpamming(message.author.id);
-    if (spamming) {
-      try {
-        await message.reply("⚠️ スパム検出: しばらく待ってからメッセージを送ってください。");
-        await message.delete().catch(() => {});
-      } catch (_) {}
-      return;
+    // 人間のユーザーのみ出禁・スパム・統計チェック
+    if (!message.author.bot) {
+      // 出禁チェック（メッセージは消さず、他サーバーへの転送のみスキップ）
+      const banned = await isPermanentlyBanned(message.author.id);
+      if (banned) return;
+
+      // スパムチェック
+      const spamming = await isSpamming(message.author.id);
+      if (spamming) {
+        try {
+          await message.reply("⚠️ スパム検出: しばらく待ってからメッセージを送ってください。");
+          await message.delete().catch(() => {});
+        } catch (_) {}
+        return;
+      }
+
+      // 統計更新
+      await incrementUserStats(message.author.id, message.author.displayName);
     }
-
-    // 統計更新
-    await incrementUserStats(message.author.id, message.author.displayName);
 
     await db.insert(globalMessagesTable).values({
       originMessageId: message.id,
@@ -528,7 +534,7 @@ export async function startBot(): Promise<void> {
   // メッセージ編集
   // ========================
   client.on(Events.MessageUpdate, async (oldMessage, newMessage) => {
-    if (!newMessage.author || newMessage.author.bot) return;
+    if (!newMessage.author) return;
     if (!newMessage.guild) return;
 
     const [globalChannel] = await db
