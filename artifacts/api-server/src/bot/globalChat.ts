@@ -35,6 +35,7 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildMessageReactions,
   ],
 });
 
@@ -563,6 +564,86 @@ export async function startBot(): Promise<void> {
     await db
       .delete(globalMessagesTable)
       .where(eq(globalMessagesTable.originMessageId, message.id));
+  });
+
+  // ========================
+  // リアクション追加
+  // ========================
+  client.on(Events.MessageReactionAdd, async (reaction, user) => {
+    if (user.bot) return;
+
+    if (reaction.partial) {
+      try { await reaction.fetch(); } catch { return; }
+    }
+    if (!reaction.message.guild) return;
+
+    const [globalChannel] = await db
+      .select()
+      .from(globalChannelsTable)
+      .where(eq(globalChannelsTable.channelId, reaction.message.channelId));
+    if (!globalChannel) return;
+
+    const mappings = await db
+      .select()
+      .from(globalMessageMappingsTable)
+      .where(eq(globalMessageMappingsTable.originMessageId, reaction.message.id));
+
+    const emoji = reaction.emoji.id
+      ? `${reaction.emoji.animated ? "a" : ""}:${reaction.emoji.name}:${reaction.emoji.id}`
+      : reaction.emoji.name!;
+
+    for (const mapping of mappings) {
+      try {
+        const channel = await client.channels.fetch(mapping.channelId);
+        if (!channel?.isTextBased()) continue;
+        const msg = await (channel as TextChannel).messages.fetch(mapping.webhookMessageId);
+        await msg.react(emoji);
+      } catch (err) {
+        logger.error({ err, channelId: mapping.channelId }, "Failed to mirror reaction");
+      }
+    }
+  });
+
+  // ========================
+  // リアクション削除
+  // ========================
+  client.on(Events.MessageReactionRemove, async (reaction, user) => {
+    if (user.bot) return;
+
+    if (reaction.partial) {
+      try { await reaction.fetch(); } catch { return; }
+    }
+    if (!reaction.message.guild) return;
+
+    // 同じ絵文字のリアクションがまだ残っている場合はミラーを維持
+    if ((reaction.count ?? 1) > 0) return;
+
+    const [globalChannel] = await db
+      .select()
+      .from(globalChannelsTable)
+      .where(eq(globalChannelsTable.channelId, reaction.message.channelId));
+    if (!globalChannel) return;
+
+    const mappings = await db
+      .select()
+      .from(globalMessageMappingsTable)
+      .where(eq(globalMessageMappingsTable.originMessageId, reaction.message.id));
+
+    for (const mapping of mappings) {
+      try {
+        const channel = await client.channels.fetch(mapping.channelId);
+        if (!channel?.isTextBased()) continue;
+        const msg = await (channel as TextChannel).messages.fetch(mapping.webhookMessageId);
+        const botReaction = msg.reactions.cache.find((r) =>
+          reaction.emoji.id
+            ? r.emoji.id === reaction.emoji.id
+            : r.emoji.name === reaction.emoji.name
+        );
+        if (botReaction) await botReaction.users.remove(client.user!.id);
+      } catch (err) {
+        logger.error({ err, channelId: mapping.channelId }, "Failed to remove mirrored reaction");
+      }
+    }
   });
 
   await client.login(token);
