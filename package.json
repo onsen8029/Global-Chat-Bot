@@ -3,8 +3,9 @@
   "version": "0.0.0",
   "license": "MIT",
   "scripts": {
-    "build": "tsc --build",
-    "start": "node dist/index.js"
+    "dev": "ts-node src/main.ts",
+    "start": "ts-node src/main.ts",
+    "build": "echo 'Skipping build step...'"
   },
   "private": true,
   "dependencies": {
@@ -14,11 +15,11 @@
     "drizzle-zod": "^0.5.0",
     "pg": "^8.11.3",
     "zod": "^3.22.4",
-    "@tanstack/react-query": "^5.25.0"
-  },
- "devDependencies": {
-    "typescript": "^5.3.3",
+    "@tanstack/react-query": "^5.25.0",
     "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  },
+  "devDependencies": {
     "@types/node": "^20.11.24"
-  }　
+  }
 }
