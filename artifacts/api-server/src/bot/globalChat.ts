@@ -7,6 +7,7 @@ import {
   ChannelType,
   Events,
   PermissionFlagsBits,
+  ActivityType,
   type Message,
   type TextChannel,
   type MessageCreateOptions,
@@ -248,6 +249,19 @@ async function deleteBroadcastedMessages(originMessageId: string): Promise<void>
     .where(eq(globalMessageMappingsTable.originMessageId, originMessageId));
 }
 
+function updateStatus(): void {
+  const guildCount = client.guilds.cache.size;
+  client.user?.setPresence({
+    activities: [
+      {
+        name: `${guildCount} サーバーで稼働中`,
+        type: ActivityType.Watching,
+      },
+    ],
+    status: "online",
+  });
+}
+
 async function registerCommands(token: string, clientId: string): Promise<void> {
   const commands = [
     new SlashCommandBuilder()
@@ -261,6 +275,10 @@ async function registerCommands(token: string, clientId: string): Promise<void> 
     new SlashCommandBuilder()
       .setName("ランキング")
       .setDescription("グローバルチャットの発言数ランキングを表示します")
+      .toJSON(),
+    new SlashCommandBuilder()
+      .setName("インストール数")
+      .setDescription("Botが導入されているサーバー数とグローバルチャットの統計を表示します")
       .toJSON(),
     new SlashCommandBuilder()
       .setName("出禁")
@@ -297,7 +315,13 @@ export async function startBot(): Promise<void> {
   client.once(Events.ClientReady, async (readyClient) => {
     logger.info({ tag: readyClient.user.tag }, "Discord bot is ready");
     await registerCommands(token, readyClient.user.id);
+    updateStatus();
+    // 10分ごとにステータスを更新
+    setInterval(updateStatus, 10 * 60 * 1000);
   });
+
+  client.on(Events.GuildCreate, () => updateStatus());
+  client.on(Events.GuildDelete, () => updateStatus());
 
   client.on(Events.InteractionCreate, async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
@@ -379,6 +403,49 @@ export async function startBot(): Promise<void> {
 
       await interaction.editReply("✅ このチャンネルのグローバルチャット登録を解除しました。");
       logger.info({ channelId: interaction.channelId }, "Global channel unregistered");
+    }
+
+    // ========================
+    // /インストール数
+    // ========================
+    if (commandName === "インストール数") {
+      await interaction.deferReply();
+
+      const guildCount = client.guilds.cache.size;
+      const globalChannels = await db.select().from(globalChannelsTable);
+      const globalGuildIds = new Set(globalChannels.map((c) => c.guildId));
+      const [statsRow] = await db
+        .select({ total: sql<number>`sum(${userStatsTable.totalMessages})` })
+        .from(userStatsTable);
+      const totalMessages = Number(statsRow?.total ?? 0);
+
+      await interaction.editReply({
+        embeds: [
+          {
+            title: "📊 Bot 統計情報",
+            color: 0x5865f2,
+            fields: [
+              {
+                name: "🏠 導入サーバー数",
+                value: `${guildCount.toLocaleString()} サーバー`,
+                inline: true,
+              },
+              {
+                name: "🌐 グローバルチャット参加サーバー",
+                value: `${globalGuildIds.size.toLocaleString()} サーバー`,
+                inline: true,
+              },
+              {
+                name: "📨 グローバルチャット総発言数",
+                value: `${totalMessages.toLocaleString()} 件`,
+                inline: true,
+              },
+            ],
+            footer: { text: "リアルタイムデータ" },
+            timestamp: new Date().toISOString(),
+          },
+        ],
+      });
     }
 
     // ========================
